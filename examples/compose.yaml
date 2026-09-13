@@ -1,0 +1,11 @@
+services:
+  web:
+    image: docker.io/library/nginx:1.28.0
+    ports:
+      - "127.0.0.1:18080:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 6

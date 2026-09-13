@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "state_dir": "~/.local/state/mooring",
+  "services": {
+    "example": {
+      "repository": "git@github.com:YOUR_ACCOUNT/YOUR_APPLICATION.git",
+      "ref": "refs/heads/main",
+      "compose_file": "compose.yaml",
+      "project": "example",
+      "project_directory": "~/services/example",
+      "runtime": "docker",
+      "service": "web",
+      "automatic": false,
+      "stateless": true,
+      "rollback_safe": true,
+      "allow_interruption": true,
+      "window": {"start": "04:00", "end": "05:00", "timezone": "Europe/Berlin"},
+      "update": {"enabled": true, "level": "patch", "minimum_age_seconds": 43200}
+    }
+  }
+}

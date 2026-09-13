@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mooring-deploy"
+version = "0.1.0"
+description = "Host-local, revision-based container deployments for Docker and Podman"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["ruamel.yaml>=0.18,<0.19", "semantic-version>=2.10,<3"]
+
+[project.scripts]
+mooring = "mooring.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mooring"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.12"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires real container runtimes and a local registry"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
