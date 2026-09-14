@@ -1,14 +1,17 @@
 # Working on Mooring
 
-Read [README.md](README.md) for the deployment contract. For target-host actions,
-read [agent operations](docs/agents.md) and that host's owning inventory record.
-Preserve unrelated containers, data and repositories.
+Read [README.md](README.md) for the deployment contract and development commands.
+Keep manual, agent and scheduled operations on the same JSON CLI.
 
-Keep the JSON CLI the shared interface for manual and automatic operations.
-Trusted local host configuration owns hook authority. Git owns desired Compose
-configuration. Keep those responsibilities separate.
+For host setup, deployment or recovery, read [agent operations](docs/agents.md)
+and the user's target-host record. Reuse the configured deployment repository;
+Mooring does not require a separate repository per service. Git owns Compose;
+trusted host configuration owns hooks, schedules and rollback permission.
 
-Run local tests and lint for implementation changes. Changes to deployment,
-recovery or runtime adapters also require the opt-in integration suite against
-real Docker and rootless Podman on an authorized test host. Record tested versions
-and unresolved limits in [validation](docs/validation.md).
+For implementation changes, run the README's local tests and lint. Changes to
+runtime adapters, deployment or recovery also require the integration suite on
+an authorized test host with Docker and rootless Podman. Record actual results
+and remaining limits in [validation](docs/validation.md).
+
+A deployment is complete when target-host status shows the intended image,
+passing health and no pending operation. Preserve unrelated containers and data.

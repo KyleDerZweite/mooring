@@ -2,6 +2,8 @@
 
 Install the example user units under `~/.config/systemd/user/`, then run
 `systemctl --user daemon-reload` and `systemctl --user enable --now mooring.timer`.
+Enable `loginctl enable-linger USER` so scheduling survives logout; verify
+`loginctl show-user USER -p Linger` and `systemctl --user list-timers mooring.timer`.
 The timer checks every five minutes; each service's IANA time zone/window decides
 eligibility. There is no catch-up run outside the window. A service without a
 window is eligible all day. Observe results with `journalctl --user -u mooring`.
@@ -51,8 +53,9 @@ owner. Bind-file contents and external secrets are the service owner's concern.
 Automatic Git commits require a literal versioned `image:` field. Tags matching
 a semver family are candidates; prereleases are excluded. Delay is measured from
 first observation of the newest eligible tag and its digest, not publication
-time. A changed digest restarts the delay; Mooring waits for the newest candidate
-instead of selecting an older mature candidate. Updates published by this host
+time. A changed digest restarts the delay. `minimum_major_age_seconds` overrides
+`minimum_age_seconds` for major-version changes. While the newest major matures,
+the newest eligible same-major fix can proceed. Updates published by this host
 retain a private digest approval, so deployment pulls the observed bytes even
 if the tag later moves. Git changes authored elsewhere are resolved at pull time.
 Registry discovery needs Skopeo's own
@@ -74,3 +77,9 @@ retention; monitor disk use and back up the private state directory. Interrupted
 operations and their release files must be retained. Git snapshots are limited
 to 128 MiB and reject symlinks/submodules. Deployment branches should contain
 configuration and references, not application assets or credentials.
+
+Each entry deploys one selected service from one Compose file. Sibling services
+and `depends_on` are excluded from deployment; shared Compose resources remain
+part of the configuration check. Builds, includes, configs/secrets references
+and unresolved external env files are unsupported. Backup hooks own persistent
+data; Mooring stores rendered environment values privately in deployment state.
