@@ -194,6 +194,7 @@ def test_podman_monitor_outlives_updater_without_leaking_service_identity(tmp_pa
     monkeypatch.setenv("INVOCATION_ID", "parent-service")
     monkeypatch.setenv("NOTIFY_SOCKET", "/parent/socket")
     monkeypatch.setenv("KEEP_FOR_REGISTRY_AUTH", "present")
+    (tmp_path / "compose.yaml").write_text('{"services":{"app":{"image":"example:1.0.0"}}}')
     calls = []
     monkeypatch.setattr("mooring.runtime.run", lambda argv, **kwargs: calls.append(kwargs))
     Runtime(

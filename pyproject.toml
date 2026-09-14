@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mooring-deploy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Host-local, revision-based container deployments for Docker and Podman"
 readme = "README.md"
 license = "MIT"

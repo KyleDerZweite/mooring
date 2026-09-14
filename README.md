@@ -45,8 +45,8 @@ host-maintenance locking. [The agent guide](docs/agents.md) covers machine calle
 
 ## Deployment contract
 
-A run fetches the configured branch, compares the complete rendered Compose
-configuration, pulls the chosen image, journals the operation, backs up state,
+A run fetches the configured branch, compares the selected service and shared
+Compose resources, pulls the chosen image, journals the operation, backs up state,
 waits for fresh idle evidence, drains traffic, checks idle again, recreates the
 selected service, verifies image/configuration receipts and health, then resumes
 traffic. Each service requires an explicit Compose healthcheck or application
@@ -58,10 +58,14 @@ Automatic deployment permits only changes to the selected service's image.
 Initial deployment, configuration changes and changed host policy require explicit
 `apply`. Registry discovery selects semver tags within the configured patch,
 minor or major range, preserves the tag family, and waits after first observation.
+`minimum_major_age_seconds` overrides the delay when crossing a major version;
+a same-major fix can proceed while a newer major matures.
 It publishes an ordinary Git commit before deployment. A pending desired image
 is attempted before discovering another update. Conflicting pushes fail safely.
 
-Rollback uses the exact previous locally stored image and rendered configuration.
+Containers are created with readable image tags. Before creation, Mooring binds the
+tag to the approved local image ID and checks the running identity afterwards.
+Rollback rebinds the previous tag to the saved image ID and uses the saved configuration.
 It runs automatically only for image-only changes with `rollback_safe: true`.
 This declaration means the service owner has checked data compatibility. Image
 rollback cannot undo a database migration. Failure without a safe rollback leaves

@@ -177,6 +177,8 @@ def test_deploy_update_persistence_and_manual_config(stack):
     expect_error("manual_change", lambda: d.apply(automatic=True))
     assert d.apply()["result"] == "deployed"
     first = d.runtime.observe()[0]["id"]
+    actual = json.loads(command(d.cfg["runtime"], "inspect", first))[0]
+    assert actual["Config"]["Image"].endswith(":1.0.0")
     command(d.cfg["runtime"], "exec", first, "sh", "-c", "echo volume-survives > /data/sentinel")
     assert d.apply()["result"] == "unchanged"
     assert d.runtime.observe()[0]["id"] == first
@@ -204,6 +206,14 @@ def test_preflight_failures_and_exact_rollback(stack):
     d.apply()
     original = d.runtime.observe()[0]["id"]
     old_image = d.state()["applied"]["image_id"]
+    # A later pull moving the prior tag must not change the rollback bytes.
+    d.runtime.pull(d.state()["applied"]["image"].rsplit(":", 1)[0] + ":1.0.2")
+    command(
+        d.cfg["runtime"],
+        "tag",
+        d.state()["applied"]["image"].rsplit(":", 1)[0] + ":1.0.2",
+        d.state()["applied"]["image"],
+    )
     publish("1.0.1")
     d.cfg["hooks"]["backup"] = ["false"]
     expect_error("hook_failed", lambda: d.apply())
@@ -312,3 +322,37 @@ def test_systemd_user_executes_same_cli(stack):
         cgroup = Path(f"/proc/{info['State']['ConmonPid']}/cgroup").read_text()
         assert "libpod-conmon-" in cgroup
         assert d.cfg["project"] + ".service" not in cgroup
+
+
+def test_sibling_image_change_does_not_recreate_selected_service(stack):
+    d, _, _, registry = stack
+    author = Path(d.cfg["repository"]).parent / "author"
+    path = author / "compose.yaml"
+    document = json.loads(path.read_text())
+    document["services"]["sibling"] = {"image": registry + ":1.0.0"}
+    document["services"]["app"]["depends_on"] = ["sibling"]
+
+    def publish():
+        path.write_text(json.dumps(document))
+        command("git", "-C", str(author), "add", ".")
+        command(
+            "git",
+            "-C",
+            str(author),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@localhost",
+            "commit",
+            "-m",
+            "Sibling update",
+        )
+        command("git", "-C", str(author), "push", "origin", "main")
+
+    publish()
+    d.apply()
+    original = d.runtime.observe()[0]["id"]
+    document["services"]["sibling"]["image"] = registry + ":1.0.1"
+    publish()
+    assert d.apply(automatic=True)["result"] == "unchanged"
+    assert d.runtime.observe()[0]["id"] == original

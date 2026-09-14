@@ -232,3 +232,22 @@ def test_apply_binds_matching_approval_to_digest(deployment, monkeypatch, matchi
     applied = deployment.state()["applied"]
     assert applied["image"] == "example/web:1.0.1"
     assert applied["approved_digest"] == ("sha256:approved" if matching else None)
+
+
+def test_major_wait_allows_newest_same_major_patch(deployment, monkeypatch):
+    deployment.cfg["update"].update(level="major", minimum_age_seconds=0, minimum_major_age_seconds=86400)
+    plan = {"revision": "a" * 40, "image": "example/web:v7.3.0"}
+    monkeypatch.setattr(deployment, "_plan", lambda: (plan, {}))
+    now = {"value": 100}
+    monkeypatch.setattr("mooring.updates.timestamp", lambda: now["value"])
+    monkeypatch.setattr(
+        "mooring.updates.run",
+        lambda argv: json.dumps(
+            {"Tags": ["v8.0.0", "v7.3.1", "v7.3.2"]} if "list-tags" in argv else {"Digest": "sha256:test"}
+        ),
+    )
+    result = update(deployment)
+    assert result["candidate"] == "example/web:v7.3.2"
+    assert result["maturing_candidate"]["candidate"] == "example/web:v8.0.0"
+    now["value"] += 86400
+    assert update(deployment)["candidate"] == "example/web:v8.0.0"

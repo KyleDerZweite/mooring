@@ -69,6 +69,11 @@ class Runtime:
                 raise Error(
                     "unsupported_compose", "Use published images; build/extends/develop are unsupported"
                 )
+        # Entries own one independently deployed service. Dependencies are never
+        # started here; omit siblings so their image updates cannot invalidate this
+        # entry's configuration receipt.
+        document["services"] = {self.cfg["service"]: document["services"][self.cfg["service"]]}
+        document["services"][self.cfg["service"]].pop("depends_on", None)
         # Podman Compose bases relative mounts on the compose-file directory, not cwd.
         # A temporary file IN the stable project directory makes both runtimes agree.
         import tempfile
@@ -78,7 +83,7 @@ class Runtime:
         )
         try:
             with os.fdopen(fd, "w") as stream:
-                stream.write(source.read_text())
+                stream.write(yaml_text(document))
             output = run([*self.compose(name), "config"], cwd=self.cfg["project_directory"])
             rendered = YAML(typ="safe").load(output)
         finally:
@@ -171,16 +176,24 @@ class Runtime:
     def freeze(self, rendered, identity, destination):
         executable = copy.deepcopy(rendered)
         target = executable["services"][self.cfg["service"]]
-        target["image"] = identity
         labels = target.setdefault("labels", {})
         if isinstance(labels, list):
             labels = dict(item.split("=", 1) if "=" in item else (item, "") for item in labels)
             target["labels"] = labels
+        labels["io.mooring.image-id"] = identity
         labels["io.mooring.config-hash"] = fingerprint(rendered)
         labels["io.mooring.health-required"] = "true" if has_healthcheck(target) else "false"
         atomic_write(destination, yaml_text(executable))
 
     def deploy(self, executable):
+        target = YAML(typ="safe").load(Path(executable).read_text())["services"][self.cfg["service"]]
+        identity = target.get("labels", {}).get("io.mooring.image-id")
+        if identity:
+            # Keep the human-readable reference at container creation, but bind it
+            # to the approved local bytes. Rollback retags the saved identity too.
+            run([self.binary, "tag", identity, target["image"]])
+            if self.image(target["image"])["id"] != identity:
+                raise Error("image_identity", "Local version tag differs from the approved image")
         env = os.environ.copy()
         if self.binary == "podman":
             # Podman 5.7 suppresses conmon's independent scope under INVOCATION_ID.

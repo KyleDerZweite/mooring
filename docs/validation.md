@@ -44,3 +44,10 @@ claimed by these tests. Those require application-specific adoption checks.
 Run the commands in README to reproduce. Integration fixtures use loopback-only
 registries and unique test object names. They remove their own containers,
 volumes and networks; base image/build caches may remain.
+
+On 2026-09-14, regression coverage was added for readable running image references,
+rollback after a prior tag moves, independent sibling image changes, and a major
+release delay that does not block immediate same-major fixes. VPS enrollment must
+verify user lingering; an enabled user timer alone stops after logout.
+The full Docker/Podman integration suite passed all 12 tests on the dedicated host
+(118.83 seconds). Local unit checks passed 33 tests; lint and formatting passed.

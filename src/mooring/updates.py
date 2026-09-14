@@ -54,11 +54,20 @@ def update(deployment, *, commit=False, expected_revision=None, automatic=False)
         policy = deployment.cfg.get("update")
         if not isinstance(policy, dict):
             raise Error("update_policy_required", "Configure an explicit version update policy")
-        if set(policy) - {"level", "tag_pattern", "minimum_age_seconds", "enabled"}:
+        if set(policy) - {
+            "level",
+            "tag_pattern",
+            "minimum_age_seconds",
+            "minimum_major_age_seconds",
+            "enabled",
+        }:
             raise Error("tag_policy", "Unknown update policy fields")
         age = policy.get("minimum_age_seconds", 43200)
         if type(age) not in (int, float) or age < 0 or (isinstance(age, float) and not math.isfinite(age)):
             raise Error("tag_policy", "minimum_age_seconds must be finite and non-negative")
+        major_age = policy.get("minimum_major_age_seconds", age)
+        if type(major_age) not in (int, float) or major_age < 0 or not math.isfinite(major_age):
+            raise Error("tag_policy", "minimum_major_age_seconds must be finite and non-negative")
         plan, rendered = deployment._plan()
         if automatic:
             deployment.check_automatic_authority(plan, deployment.state())
@@ -85,21 +94,50 @@ def update(deployment, *, commit=False, expected_revision=None, automatic=False)
         }
         if not candidates:
             return {**result, "result": "up_to_date"}
-        # Inspect only the newest eligible tag. Wait for it to mature rather than
-        # publishing an older candidate or querying every available manifest.
-        target = repository + ":" + candidates[0]
-        metadata = json.loads(run(["skopeo", "inspect", *tls, "docker://" + target]))
-        digest = metadata["Digest"]
+        expression = re.compile(policy.get("tag_pattern", r"^v?(?P<version>\d+\.\d+\.\d+)$"))
+        current_major = Version(expression.fullmatch(current)["version"]).major
+        newest = candidates[0]
+        # While the newest major matures, a same-major fix can still be installed.
+        same_major = next(
+            (
+                tag
+                for tag in candidates
+                if Version(expression.fullmatch(tag)["version"]).major == current_major
+            ),
+            None,
+        )
+        choices = [newest] + ([same_major] if same_major and same_major != newest else [])
         path = deployment.root / "first-seen.json"
         seen = read_json(path, {})
+        next_seen = {}
         now = timestamp()
-        key = target + "@" + digest
-        # A publisher moving the tag to different bytes restarts its delay.
-        first_observed = seen.get(key, now)
-        write_json(path, {key: first_observed})
-        result.update(candidate=target, digest=digest, first_observed=first_observed)
-        if now - first_observed < age:
-            return {**result, "result": "maturing"}
+        waiting = None
+        for tag in choices:
+            target = repository + ":" + tag
+            metadata = json.loads(run(["skopeo", "inspect", *tls, "docker://" + target]))
+            digest = metadata["Digest"]
+            key = target + "@" + digest
+            first_observed = seen.get(key, now)
+            next_seen[key] = first_observed
+            required_age = (
+                major_age if Version(expression.fullmatch(tag)["version"]).major != current_major else age
+            )
+            candidate_result = dict(
+                candidate=target,
+                digest=digest,
+                first_observed=first_observed,
+                minimum_age_seconds=required_age,
+            )
+            if now - first_observed >= required_age:
+                result.update(candidate_result)
+                break
+            waiting = waiting or candidate_result
+        else:
+            write_json(path, next_seen)
+            return {**result, **waiting, "result": "maturing"}
+        write_json(path, next_seen)
+        if waiting:
+            result["maturing_candidate"] = waiting
         result["result"] = "available"
         if commit:
             desired = copy.deepcopy(rendered)
