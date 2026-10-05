@@ -161,6 +161,13 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
                 write_json(receipt_path, receipt)
 
             progress.update(receipt)
+            if previous["config_hash"] == receipt["config_hash"] and not deployment.update_is_applied(
+                receipt
+            ):
+                raise Error(
+                    "digest_mismatch",
+                    "Applied target lacks the retained approved digest; inspect status/history and explicitly apply only to accept the reviewed running state",
+                )
             # Store approved bytes before any push, including retries after an ambiguous push.
             write_json(
                 deployment.root / "approved-update.json",
@@ -187,11 +194,12 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
                         prepared=prepared,
                     )
                 receipt.update(phase="published", published_revision=receipt["revision"])
-            write_json(receipt_path, receipt)
             progress.update(receipt)
+            write_json(receipt_path, receipt)
             result = deployment._apply(expected_revision=receipt["revision"], image_update=True)
+            progress.update(phase="completed", result=result["result"], deployment=result)
             receipt_path.unlink()
-            return {**progress, "phase": "completed", "result": result["result"], "deployment": result}
+            return progress
     except Exception as error:
         if not isinstance(error, Error):
             error = Error("internal_error", "Unexpected manual update failure; inspect status and history")

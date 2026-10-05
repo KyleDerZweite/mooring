@@ -203,18 +203,22 @@ class Deployment:
         self.phase(op, phase)
         self.save(state)
 
-    def retire_completed_update(self):
-        """Forget only an intent already recorded as applied; caller holds the lock."""
-        receipt = read_json(self.root / "manual-update.json", {})
+    def update_is_applied(self, receipt):
+        """A receipt is fulfilled only by its approved bytes and effective configuration."""
         state = self.state()
         applied = state.get("applied", {})
-        fulfilled = (
+        return (
             bool(receipt)
             and not state.get("active")
             and receipt.get("candidate") == applied.get("image")
             and receipt.get("digest") == applied.get("approved_digest")
             and all(receipt.get(key) == applied.get(key) for key in ("config_hash", "authority_hash"))
         )
+
+    def retire_completed_update(self):
+        """Forget only an intent already recorded as applied; caller holds the lock."""
+        receipt = read_json(self.root / "manual-update.json", {})
+        fulfilled = self.update_is_applied(receipt)
         if fulfilled:
             (self.root / "manual-update.json").unlink()
         return fulfilled
@@ -272,6 +276,15 @@ class Deployment:
                 "drain_required", "Configure idle/drain/resume hooks or explicitly allow interruption"
             )
         approval = read_json(self.root / "approved-update.json", {})
+        receipt = read_json(self.root / "manual-update.json", {})
+        if receipt.get("candidate") == plan["image"] and receipt.get("config_hash") == plan["config_hash"]:
+            # A later failed publication may overwrite the ordinary approval file.
+            # The retained manual target still owns its original approved bytes.
+            approval = {
+                "image": receipt["candidate"],
+                "config_hash": receipt["config_hash"],
+                "digest": receipt["digest"],
+            }
         approved_digest = None
         pull_reference = plan["image"]
         if approval.get("image") == plan["image"] and approval.get("config_hash") == plan["config_hash"]:

@@ -47,7 +47,12 @@ keeps it available for a deliberate retry. To supersede a retained target after
 reviewing a changed branch or host policy, explicitly `apply NAME --revision SHA`.
 Successful explicit apply clears the old intent. A normal automatic deployment of
 the retained revision also clears it. Failed candidates remain quarantined for
-automatic apply; `--now` is an explicit retry of its retained target.
+automatic apply; `--now` is an explicit retry of its retained target. A retained
+receipt remains the digest approval for its matching image/configuration even if
+a later failed publication overwrites the ordinary update approval. If an already
+applied target has a different or unknown approved digest, retry stops with
+`digest_mismatch`. Review status/history before explicitly applying to accept the
+running state and supersede the old intent. This does not repull the same tag.
 
 `update NAME --commit --revision SHA` publishes only a version change; `apply`
 deploys it. `run` combines discovery and automatic deployment according to trusted

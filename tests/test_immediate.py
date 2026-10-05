@@ -536,3 +536,93 @@ def test_different_applied_target_cannot_retire_manual_intent(manual, field, val
     with d.locks():
         assert not d.retire_completed_update()
     assert (d.root / "manual-update.json").exists()
+
+
+def test_failed_bare_publication_cannot_replace_retained_target_approval(manual, monkeypatch):
+    from mooring.updates import update
+
+    d, _, _ = manual
+    d.cfg["update"]["minimum_age_seconds"] = 0
+    state = d.state()
+    state["applied"]["authority_hash"] = fingerprint(d.cfg)
+    d.save(state)
+    d.runtime.pull.side_effect = Error("pull_failed", "Temporary failure")
+    with pytest.raises(Error):
+        immediate_update(d, version="1.0.1")
+    monkeypatch.setattr(
+        "mooring.updates.run",
+        lambda argv: json.dumps({"Tags": ["1.0.2"]} if "list-tags" in argv else {"Digest": "sha256:later"}),
+    )
+    d.source.commit_image.side_effect = Error("push_failed", "Later publication failed")
+    with pytest.raises(Error):
+        update(d, commit=True)
+    assert read_json(d.root / "approved-update.json")["digest"] == "sha256:later"
+    d.runtime.pull.side_effect = None
+    d.runtime.pull.reset_mock()
+    monkeypatch.setattr("mooring.deployment.in_window", lambda _: True)
+    assert d.apply(automatic=True)["result"] == "deployed"
+    d.runtime.pull.assert_called_once_with("example/app@sha256:chosen")
+    assert d.state()["applied"]["approved_digest"] == "sha256:chosen"
+    assert not (d.root / "manual-update.json").exists()
+
+
+@pytest.mark.parametrize("digest", [None, "sha256:different"])
+def test_retained_same_revision_never_claims_unproven_bytes_as_unchanged(manual, digest):
+    d, _, _ = manual
+    original_apply = d._apply
+
+    def interrupted(**kwargs):
+        original_apply(**kwargs)
+        raise KeyboardInterrupt()
+
+    d._apply = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        immediate_update(d, version="1.0.1")
+    d._apply = original_apply
+    state = d.state()
+    state["applied"]["approved_digest"] = digest
+    d.save(state)
+    d.runtime.pull.reset_mock()
+    with pytest.raises(Error) as caught:
+        immediate_update(d)
+    assert caught.value.code == "digest_mismatch"
+    assert caught.value.data["phase"] == "published"
+    assert (d.root / "manual-update.json").exists()
+    d.runtime.pull.assert_not_called()
+    # Explicitly accepting the independently reviewed state supersedes the intent.
+    assert d.apply(expected_revision="b" * 40)["result"] == "unchanged"
+    assert not (d.root / "manual-update.json").exists()
+
+
+def test_publication_stays_visible_when_receipt_write_fails(manual, monkeypatch):
+    d, _, _ = manual
+
+    def fail_published_receipt(path, value):
+        if path.name == "manual-update.json" and value["phase"] == "published":
+            raise OSError("write failed")
+        write_json(path, value)
+
+    monkeypatch.setattr("mooring.immediate.write_json", fail_published_receipt)
+    with pytest.raises(Error) as caught:
+        immediate_update(d)
+    assert caught.value.data["phase"] == "published"
+    assert caught.value.data["published_revision"] == "b" * 40
+    d.runtime.pull.assert_not_called()
+
+
+def test_successful_deployment_stays_visible_when_receipt_cleanup_fails(manual, monkeypatch):
+    d, _, _ = manual
+    receipt_path = d.root / "manual-update.json"
+    original_unlink = type(receipt_path).unlink
+
+    def fail_receipt_cleanup(path, *args, **kwargs):
+        if path == receipt_path:
+            raise OSError("cleanup failed")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(receipt_path), "unlink", fail_receipt_cleanup)
+    with pytest.raises(Error) as caught:
+        immediate_update(d)
+    assert caught.value.data["phase"] == "completed"
+    assert caught.value.data["deployment"]["result"] == "deployed"
+    assert not d.state().get("active")

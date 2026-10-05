@@ -436,3 +436,34 @@ def test_immediate_adopts_pending_image_and_rejects_policy_before_commit(stack):
     d.cfg["hooks"]["health"] = ["true"]
     expect_error("authority_changed", lambda: immediate_update(d))
     assert d.plan()["revision"] == revision
+
+
+def test_retained_manual_digest_survives_failed_later_publication(stack, monkeypatch):
+    d, _, _, registry = stack
+    marker = Path(d.cfg["project_directory"]) / "allow-backup"
+    d.cfg["hooks"]["backup"] = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; raise SystemExit(0 if Path({str(marker)!r}).exists() else 1)",
+    ]
+    marker.touch()
+    d.apply()
+    marker.unlink()
+    with pytest.raises(Error) as failure:
+        immediate_update(d, version="1.0.1")
+    assert failure.value.code == "hook_failed"
+    approved_digest = failure.value.data["digest"]
+
+    def fail_push(*args, **kwargs):
+        raise Error("push_failed", "Simulated competing publication failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(d.source, "commit_image", fail_push)
+        expect_error("push_failed", lambda: update(d, commit=True))
+    marker.touch()
+    assert d.apply(automatic=True)["result"] == "deployed"
+    applied = d.state()["applied"]
+    assert applied["image"] == registry + ":1.0.1"
+    assert applied["approved_digest"] == approved_digest
+    assert d.runtime.healthy(applied["image_id"], applied["config_hash"])
+    assert not (d.root / "manual-update.json").exists()
