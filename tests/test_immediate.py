@@ -27,7 +27,12 @@ def manual(tmp_path, monkeypatch):
         "stateless": True,
         "allow_interruption": True,
         "automatic": True,
-        "update": {"level": "patch", "minimum_age_seconds": 86400, "minimum_major_age_seconds": 864000},
+        "update": {
+            "enabled": True,
+            "level": "patch",
+            "minimum_age_seconds": 86400,
+            "minimum_major_age_seconds": 864000,
+        },
         "window": {"start": "00:00", "end": "00:01", "timezone": "UTC"},
     }
     d = Deployment(
@@ -412,3 +417,34 @@ def test_resume_failure_preserves_original_idle_phase(manual, monkeypatch):
     assert caught.value.code == "recovery_required"
     assert caught.value.data["deployment"]["failed_phase"] == "draining"
     assert caught.value.data["deployment"]["phase"] == "recovery_required"
+
+
+def test_failed_automatic_successor_does_not_resurrect_fulfilled_intent(manual, monkeypatch, capsys):
+    d, desired, _ = manual
+    original_apply = d._apply
+
+    def interrupted(**kwargs):
+        original_apply(**kwargs)
+        raise KeyboardInterrupt()
+
+    d._apply = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        immediate_update(d, version="1.0.1")
+    d._apply = original_apply
+
+    def timer_discovery(*args, **kwargs):
+        desired["revision"] = "c" * 40
+        desired["rendered"]["services"]["app"]["image"] = "example/app:1.0.2"
+        return {"result": "committed", "revision": "c" * 40}
+
+    monkeypatch.setattr(cli, "load", lambda _: d.config)
+    monkeypatch.setattr(cli, "Deployment", lambda *_: d)
+    monkeypatch.setattr(cli, "update", timer_discovery)
+    monkeypatch.setattr(cli, "in_window", lambda _: True)
+    monkeypatch.setattr("mooring.deployment.in_window", lambda _: True)
+    d.runtime.pull.side_effect = Error("pull_failed", "Temporary pull failure")
+    assert cli.main(["run"]) == 1
+    assert json.loads(capsys.readouterr().out)["data"][-1]["error"]["code"] == "pull_failed"
+    assert not (d.root / "manual-update.json").exists()
+    d.runtime.pull.side_effect = None
+    assert immediate_update(d)["version"] == "1.0.2"

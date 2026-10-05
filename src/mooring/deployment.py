@@ -210,10 +210,14 @@ class Deployment:
             fulfilled = bool(receipt) and all(
                 receipt.get(key) == applied.get(key) for key in ("revision", "config_hash", "authority_hash")
             )
+            if fulfilled:
+                # This intent already succeeded. A later candidate's failure must
+                # not resurrect it and block a fresh manual update.
+                (self.root / "manual-update.json").unlink()
             result = self._apply(automatic=automatic, expected_revision=expected_revision)
             if result["result"] in {"deployed", "unchanged"}:
                 receipt = read_json(self.root / "manual-update.json", {})
-                if not automatic or fulfilled or receipt.get("revision") == result["revision"]:
+                if not automatic or receipt.get("revision") == result["revision"]:
                     (self.root / "manual-update.json").unlink(missing_ok=True)
             return result
 
