@@ -55,7 +55,12 @@ a semver family are candidates; prereleases are excluded. Delay is measured from
 first observation of the newest eligible tag and its digest, not publication
 time. A changed digest restarts the delay. `minimum_major_age_seconds` overrides
 `minimum_age_seconds` for major-version changes. While the newest major matures,
-the newest eligible same-major fix can proceed. Updates published by this host
+the newest eligible same-major fix can proceed. `update NAME --now` explicitly bypasses these delays and the schedule for one
+service. Its private manual-update receipt retains the selected digest and exact
+Git commit across publication or deployment failures. Prepared commits remain
+reachable under private `refs/mooring/prepared/` refs in the source cache.
+[Agent operations](agents.md) describes retry and superseding a retained target.
+Updates published by this host
 retain a private digest approval, so deployment pulls the observed bytes even
 if the tag later moves. Git changes authored elsewhere are resolved at pull time.
 Registry discovery needs Skopeo's own

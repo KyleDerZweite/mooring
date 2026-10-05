@@ -14,6 +14,7 @@ import pytest
 from mooring.common import Error, lock
 from mooring.config import load
 from mooring.deployment import Deployment
+from mooring.immediate import immediate_update
 from mooring.updates import update
 
 pytestmark = [
@@ -34,29 +35,32 @@ def command(*args, cwd=None):
 @pytest.fixture(scope="session")
 def registry(tmp_path_factory):
     root = tmp_path_factory.mktemp("registry")
+    engine = os.environ.get("MOORING_TEST_REGISTRY_RUNTIME", "docker")
+    assert engine in {"docker", "podman"}
+    versions = ["1.0.0", "1.0.1", "1.0.2", "1.0.3-broken", "2.0.0"]
     name = "mooring-test-registry-" + uuid.uuid4().hex[:8]
-    command("docker", "run", "-d", "--name", name, "-p", "127.0.0.1::5000", "registry:2.8.3")
+    command(engine, "run", "-d", "--name", name, "-p", "127.0.0.1::5000", "docker.io/library/registry:2.8.3")
     try:
-        port = command("docker", "port", name, "5000/tcp").rsplit(":", 1)[1]
+        port = command(engine, "port", name, "5000/tcp").rsplit(":", 1)[1]
         repo = f"localhost:{port}/mooring-test"
-        command("docker", "pull", "busybox:1.37.0")
-        for version in ["1.0.0", "1.0.1", "1.0.2", "1.0.3-broken"]:
+        command(engine, "pull", "docker.io/library/busybox:1.37.0")
+        for version in versions:
             (root / "Dockerfile").write_text(
-                f'FROM busybox:1.37.0\nLABEL test.version="{version}"\nCMD ["sleep", "86400"]\n'
+                f'FROM docker.io/library/busybox:1.37.0\nLABEL test.version="{version}"\nCMD ["sleep", "86400"]\n'
             )
             if not version.endswith("-broken"):
                 with (root / "Dockerfile").open("a") as stream:
                     stream.write("RUN touch /healthy\n")
-            command("docker", "build", "-q", "-t", f"{repo}:{version}", str(root))
-            command("docker", "push", f"{repo}:{version}")
+            command(engine, "build", "-q", "-t", f"{repo}:{version}", str(root))
+            command(
+                engine, "push", *(["--tls-verify=false"] if engine == "podman" else []), f"{repo}:{version}"
+            )
         yield repo
     finally:
-        command("docker", "rm", "-f", name)
+        command(engine, "rm", "-f", name)
         if "repo" in locals():
-            for version in ["1.0.0", "1.0.1", "1.0.2", "1.0.3-broken"]:
-                subprocess.run(
-                    ["docker", "image", "rm", f"{repo}:{version}"], capture_output=True, check=False
-                )
+            for version in versions:
+                subprocess.run([engine, "image", "rm", f"{repo}:{version}"], capture_output=True, check=False)
 
 
 @pytest.fixture(params=["docker", "podman"])
@@ -159,7 +163,7 @@ def stack(tmp_path, registry, request):
         subprocess.run([runtime, "network", "rm", project + "_default"], capture_output=True, check=False)
         if runtime == "podman":
             subprocess.run([runtime, "pod", "rm", "pod_" + project], capture_output=True, check=False)
-            for version in ["1.0.0", "1.0.1", "1.0.2", "1.0.3-broken"]:
+            for version in ["1.0.0", "1.0.1", "1.0.2", "1.0.3-broken", "2.0.0"]:
                 subprocess.run(
                     [runtime, "image", "rm", registry + ":" + version], capture_output=True, check=False
                 )
@@ -356,3 +360,79 @@ def test_sibling_image_change_does_not_recreate_selected_service(stack):
     publish()
     assert d.apply(automatic=True)["result"] == "unchanged"
     assert d.runtime.observe()[0]["id"] == original
+
+
+def test_immediate_cli_bypasses_window_age_and_preserves_data(stack):
+    d, _, config_path, _ = stack
+    raw = json.loads(config_path.read_text())
+    # Keep the one-minute window twelve hours away from this invocation.
+    import datetime as dt
+
+    now = dt.datetime.now(dt.UTC)
+    start = (now + dt.timedelta(hours=12)).strftime("%H:%M")
+    end = (now + dt.timedelta(hours=12, minutes=1)).strftime("%H:%M")
+    raw["services"]["app"]["window"] = {"start": start, "end": end, "timezone": "UTC"}
+    raw["services"]["app"]["update"].update(minimum_age_seconds=86400, minimum_major_age_seconds=864000)
+    config_path.write_text(json.dumps(raw))
+    d = Deployment(load(config_path), "app")
+    d.apply()
+    original = d.runtime.observe()[0]["id"]
+    command(d.cfg["runtime"], "exec", original, "sh", "-c", "echo retained > /data/sentinel")
+    before_config = config_path.read_bytes()
+    assert update(d)["result"] == "maturing"
+    assert d.apply(automatic=True)["result"] == "outside_window"
+    argv = [sys.executable, "-m", "mooring.cli", "--config", str(config_path), "update", "app", "--now"]
+    result = json.loads(command(*argv))
+    assert result["ok"] and result["data"]["version"] == "1.0.2"
+    assert result["data"]["published_revision"] == d.state()["applied"]["revision"]
+    assert result["data"]["digest"] == d.state()["applied"]["approved_digest"]
+    current = d.runtime.observe()[0]["id"]
+    assert current != original
+    assert command(d.cfg["runtime"], "exec", current, "cat", "/data/sentinel") == "retained"
+    assert command(d.cfg["runtime"], "exec", current, "cat", "/bind/sentinel") == "persistent-bind"
+    assert json.loads(command(*argv, "--version", "1.0.2"))["data"]["result"] == "unchanged"
+    assert d.runtime.observe()[0]["id"] == current
+    assert json.loads(command(*argv, "--version", "2.0.0"))["data"]["version"] == "2.0.0"
+    assert config_path.read_bytes() == before_config
+    assert d.status()["pending_operation"] is None
+    assert json.loads(command(sys.executable, "-m", "mooring.cli", "--config", str(config_path), "run"))["ok"]
+
+
+def test_immediate_backup_failure_retries_target_then_automatic_continues(stack):
+    d, _, _, registry = stack
+    marker = Path(d.cfg["project_directory"]) / "allow-backup"
+    d.cfg["hooks"]["backup"] = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; raise SystemExit(0 if Path({str(marker)!r}).exists() else 1)",
+    ]
+    marker.touch()
+    d.apply()
+    marker.unlink()
+    original = d.runtime.observe()[0]["id"]
+    with pytest.raises(Error) as failure:
+        immediate_update(d, version="1.0.1")
+    assert failure.value.code == "hook_failed"
+    revision = failure.value.data["published_revision"]
+    assert revision and failure.value.data["phase"] == "published"
+    assert d.runtime.observe()[0]["id"] == original
+    assert not d.state().get("active")
+    marker.touch()
+    result = immediate_update(d)
+    assert result["version"] == "1.0.1" and result["published_revision"] == revision
+    assert d.state()["applied"]["image"] == registry + ":1.0.1"
+    assert update(d, commit=True, automatic=True)["candidate"] == registry + ":1.0.2"
+    assert d.apply(automatic=True)["result"] == "deployed"
+    assert d.runtime.healthy(d.state()["applied"]["image_id"], d.state()["applied"]["config_hash"])
+
+
+def test_immediate_adopts_pending_image_and_rejects_policy_before_commit(stack):
+    d, publish, _, _ = stack
+    d.apply()
+    publish("1.0.1")
+    revision = d.plan()["revision"]
+    assert immediate_update(d)["published_revision"] == revision
+    assert d.plan()["revision"] == revision
+    d.cfg["hooks"]["health"] = ["true"]
+    expect_error("authority_changed", lambda: immediate_update(d))
+    assert d.plan()["revision"] == revision

@@ -205,147 +205,161 @@ class Deployment:
 
     def apply(self, *, automatic=False, expected_revision=None):
         with self.locks():
-            state = self.state()
-            if state.get("active"):
-                raise Error("recovery_required", "An interrupted operation requires explicit recovery")
-            if automatic and not self.cfg.get("automatic"):
-                return {"service": self.cfg["name"], "result": "disabled"}
+            receipt = read_json(self.root / "manual-update.json", {})
+            applied = self.state().get("applied", {})
+            fulfilled = bool(receipt) and all(
+                receipt.get(key) == applied.get(key) for key in ("revision", "config_hash", "authority_hash")
+            )
+            result = self._apply(automatic=automatic, expected_revision=expected_revision)
+            if result["result"] in {"deployed", "unchanged"}:
+                receipt = read_json(self.root / "manual-update.json", {})
+                if not automatic or fulfilled or receipt.get("revision") == result["revision"]:
+                    (self.root / "manual-update.json").unlink(missing_ok=True)
+            return result
+
+    def _apply(self, *, automatic=False, expected_revision=None, image_update=False):
+        """Apply while the caller holds both deployment locks."""
+        state = self.state()
+        if state.get("active"):
+            raise Error("recovery_required", "An interrupted operation requires explicit recovery")
+        if automatic and not self.cfg.get("automatic"):
+            return {"service": self.cfg["name"], "result": "disabled"}
+        if automatic and not in_window(self.cfg):
+            return {"service": self.cfg["name"], "result": "outside_window"}
+        plan, rendered = self._plan()
+        if expected_revision and plan["revision"] != expected_revision:
+            raise Error(
+                "source_changed", "Desired revision differs from the requested revision", retryable=True
+            )
+        previous = self.check_applied(plan, state)
+        if automatic or image_update:
+            self.check_automatic_authority(plan, state)
+        if (
+            plan["change"] == "unchanged"
+            and previous
+            and previous["authority_hash"] == fingerprint(self.cfg)
+            and self.runtime.healthy(previous["image_id"], previous["config_hash"])
+        ):
+            return {**plan, "result": "unchanged"}
+        if automatic:
+            if plan["change"] != "image":
+                raise Error(
+                    "manual_change", "Repairing an unchanged unhealthy deployment requires explicit apply"
+                )
+            if state.get("failed_candidate") == plan["config_hash"]:
+                raise Error("quarantined", "This candidate failed previously; explicit apply is required")
+        if not self.cfg.get("stateless") and "backup" not in self.cfg["hooks"]:
+            raise Error("backup_required", "Stateful services require a successful backup hook")
+        if (
+            not self.cfg.get("allow_interruption")
+            and not {"idle", "drain", "resume"} <= self.cfg["hooks"].keys()
+        ):
+            raise Error(
+                "drain_required", "Configure idle/drain/resume hooks or explicitly allow interruption"
+            )
+        approval = read_json(self.root / "approved-update.json", {})
+        approved_digest = None
+        pull_reference = plan["image"]
+        if approval.get("image") == plan["image"] and approval.get("config_hash") == plan["config_hash"]:
+            approved_digest = approval["digest"]
+            repository, _ = plan["image"].rsplit(":", 1)
+            pull_reference = repository + "@" + approved_digest
+        identity = self.runtime.pull(pull_reference)
+        opid = uuid.uuid4().hex
+        release = private_dir(self.root / "releases" / opid)
+        rendered_path, executable = release / "rendered.json", release / "runtime.yaml"
+        write_json(rendered_path, rendered)
+        self.runtime.freeze(rendered, identity["id"], executable)
+        candidate = {
+            "revision": plan["revision"],
+            "image": plan["image"],
+            "image_id": identity["id"],
+            "approved_digest": approved_digest,
+            "digests": identity["digests"],
+            "config_hash": plan["config_hash"],
+            "authority_hash": fingerprint(self.cfg),
+            "rendered": str(rendered_path),
+            "executable": str(executable),
+            "operation": opid,
+        }
+        op = {
+            "id": opid,
+            "service": self.cfg["name"],
+            "started": timestamp(),
+            "automatic": automatic,
+            "candidate": candidate,
+            "previous": previous,
+            "drain_attempted": False,
+            "deployment_started": False,
+        }
+        self.phase(op, "prepared")
+        state["active"] = opid
+        self.save(state)
+        try:
+            self.phase(op, "backup")
+            hook(self.cfg, "backup")
+            self.phase(op, "waiting_idle")
+            self.wait_idle(automatic)
             if automatic and not in_window(self.cfg):
-                return {"service": self.cfg["name"], "result": "outside_window"}
-            plan, rendered = self._plan()
-            if expected_revision and plan["revision"] != expected_revision:
-                raise Error(
-                    "source_changed", "Desired revision differs from the requested revision", retryable=True
-                )
-            previous = self.check_applied(plan, state)
-            if automatic:
-                self.check_automatic_authority(plan, state)
-            if (
-                plan["change"] == "unchanged"
-                and previous
-                and previous["authority_hash"] == fingerprint(self.cfg)
-                and self.runtime.healthy(previous["image_id"], previous["config_hash"])
-            ):
-                return {**plan, "result": "unchanged"}
-            if automatic:
-                if plan["change"] != "image":
-                    raise Error(
-                        "manual_change", "Repairing an unchanged unhealthy deployment requires explicit apply"
-                    )
-                if state.get("failed_candidate") == plan["config_hash"]:
-                    raise Error("quarantined", "This candidate failed previously; explicit apply is required")
-            if not self.cfg.get("stateless") and "backup" not in self.cfg["hooks"]:
-                raise Error("backup_required", "Stateful services require a successful backup hook")
-            if (
-                not self.cfg.get("allow_interruption")
-                and not {"idle", "drain", "resume"} <= self.cfg["hooks"].keys()
-            ):
-                raise Error(
-                    "drain_required", "Configure idle/drain/resume hooks or explicitly allow interruption"
-                )
-            approval = read_json(self.root / "approved-update.json", {})
-            approved_digest = None
-            pull_reference = plan["image"]
-            if approval.get("image") == plan["image"] and approval.get("config_hash") == plan["config_hash"]:
-                approved_digest = approval["digest"]
-                repository, _ = plan["image"].rsplit(":", 1)
-                pull_reference = repository + "@" + approved_digest
-            identity = self.runtime.pull(pull_reference)
-            opid = uuid.uuid4().hex
-            release = private_dir(self.root / "releases" / opid)
-            rendered_path, executable = release / "rendered.json", release / "runtime.yaml"
-            write_json(rendered_path, rendered)
-            self.runtime.freeze(rendered, identity["id"], executable)
-            candidate = {
+                raise Error("outside_window", "Maintenance window ended before deployment", retryable=True)
+            if "drain" in self.cfg["hooks"]:
+                op["drain_attempted"] = True
+                self.phase(op, "draining")
+                hook(self.cfg, "drain")
+                self.wait_idle(automatic)
+            if automatic and not in_window(self.cfg):
+                raise Error("outside_window", "Maintenance window ended before deployment", retryable=True)
+            op["deployment_started"] = True
+            self.phase(op, "deploying")
+            self.runtime.deploy(executable)
+            self.phase(op, "verifying")
+            self.runtime.wait(identity["id"], plan["config_hash"])
+            hook(self.cfg, "health")
+            self.phase(op, "resuming")
+            hook(self.cfg, "resume")
+            state.pop("failed_candidate", None)
+            self.finish(op, state, "succeeded", candidate)
+            return {
+                "service": self.cfg["name"],
+                "result": "deployed",
+                "operation": opid,
                 "revision": plan["revision"],
                 "image": plan["image"],
                 "image_id": identity["id"],
-                "approved_digest": approved_digest,
-                "digests": identity["digests"],
-                "config_hash": plan["config_hash"],
-                "authority_hash": fingerprint(self.cfg),
-                "rendered": str(rendered_path),
-                "executable": str(executable),
-                "operation": opid,
             }
-            op = {
-                "id": opid,
-                "service": self.cfg["name"],
-                "started": timestamp(),
-                "automatic": automatic,
-                "candidate": candidate,
-                "previous": previous,
-                "drain_attempted": False,
-                "deployment_started": False,
+        except Exception as error:
+            failed_phase = op["phase"]
+            op["failed_phase"] = failed_phase
+            op["error"] = {
+                "code": getattr(error, "code", "internal_error"),
+                "message": str(error) if isinstance(error, Error) else "Unexpected deployment failure",
             }
-            self.phase(op, "prepared")
-            state["active"] = opid
-            self.save(state)
-            try:
-                self.phase(op, "backup")
-                hook(self.cfg, "backup")
-                self.phase(op, "waiting_idle")
-                self.wait_idle(automatic)
-                if automatic and not in_window(self.cfg):
-                    raise Error(
-                        "outside_window", "Maintenance window ended before deployment", retryable=True
-                    )
-                if "drain" in self.cfg["hooks"]:
-                    op["drain_attempted"] = True
-                    self.phase(op, "draining")
-                    hook(self.cfg, "drain")
-                    self.wait_idle(automatic)
-                if automatic and not in_window(self.cfg):
-                    raise Error(
-                        "outside_window", "Maintenance window ended before deployment", retryable=True
-                    )
-                op["deployment_started"] = True
-                self.phase(op, "deploying")
-                self.runtime.deploy(executable)
-                self.phase(op, "verifying")
-                self.runtime.wait(identity["id"], plan["config_hash"])
-                hook(self.cfg, "health")
-                self.phase(op, "resuming")
-                hook(self.cfg, "resume")
-                state.pop("failed_candidate", None)
-                self.finish(op, state, "succeeded", candidate)
-                return {
-                    "service": self.cfg["name"],
-                    "result": "deployed",
-                    "operation": opid,
-                    "revision": plan["revision"],
-                    "image": plan["image"],
-                    "image_id": identity["id"],
-                }
-            except Exception as error:
-                op["error"] = {
-                    "code": getattr(error, "code", "internal_error"),
-                    "message": str(error) if isinstance(error, Error) else "Unexpected deployment failure",
-                }
-                if not op["deployment_started"]:
-                    if op["drain_attempted"]:
-                        try:
-                            hook(self.cfg, "resume")
-                        except Error:
-                            self.phase(op, "recovery_required")
-                            raise Error(
-                                "recovery_required", "Resume failed; operator recovery is required"
-                            ) from error
-                    self.finish(op, state, "deferred" if getattr(error, "retryable", False) else "failed")
-                else:
-                    state["failed_candidate"] = plan["config_hash"]
-                    self.save(state)
-                    if previous and self.cfg.get("rollback_safe") and plan["change"] == "image":
-                        try:
-                            self._restore(op, state, previous)
-                        except Error:
-                            self.phase(op, "recovery_required")
-                            raise Error(
-                                "recovery_required", "Deployment and automatic rollback failed"
-                            ) from error
-                    else:
+            if not op["deployment_started"]:
+                if op["drain_attempted"]:
+                    try:
+                        hook(self.cfg, "resume")
+                    except Error:
                         self.phase(op, "recovery_required")
-                raise
+                        raise Error(
+                            "recovery_required", "Resume failed; operator recovery is required"
+                        ) from error
+                self.finish(op, state, "deferred" if getattr(error, "retryable", False) else "failed")
+            else:
+                state["failed_candidate"] = plan["config_hash"]
+                self.save(state)
+                if previous and self.cfg.get("rollback_safe") and plan["change"] == "image":
+                    try:
+                        self._restore(op, state, previous)
+                    except Error:
+                        self.phase(op, "recovery_required")
+                        raise Error(
+                            "recovery_required", "Deployment and automatic rollback failed"
+                        ) from error
+                else:
+                    self.phase(op, "recovery_required")
+            if isinstance(error, Error):
+                error.deployment = {"operation": opid, "phase": op["phase"], "failed_phase": failed_phase}
+            raise
 
     def _restore(self, op, state, previous):
         self.phase(op, "rolling_back")
@@ -374,6 +388,7 @@ class Deployment:
                 hook(self.cfg, "resume")
                 state.pop("failed_candidate", None)
                 self.finish(op, state, "recovered", op["candidate"])
+                (self.root / "manual-update.json").unlink(missing_ok=True)
             elif not op["deployment_started"]:
                 if op["drain_attempted"]:
                     hook(self.cfg, "resume")
