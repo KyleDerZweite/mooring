@@ -1,5 +1,34 @@
 # Validation
 
+The immediate manual update implementation was checked on October 5, 2026.
+Source `c440c0cfbb1019fba53e6691043f1776546712aa` passed `uv sync --group dev`,
+`uv run pytest` with 73 passed and 18 integration cases skipped, `uv run ruff
+check .` and `uv run ruff format --check .` on Python 3.14.7. Regressions cover
+exact and policy-based selection, authority and locks before publication, retained
+commit/digest retries, Git races, partial-success JSON, recovery and completed
+receipt retirement across automatic or manual successors.
+
+A disposable source snapshot of `84fbc3a576171a973e587490755ee530b80229aa` ran
+`uv sync --group dev` and `MOORING_INTEGRATION=1 uv run pytest -q
+tests/test_integration.py` on the authorized Ubuntu test host, using the Docker
+and rootless Podman versions listed below. All 18 test bodies passed in 191.51
+seconds, including the six new immediate-update cases. All nine Podman teardowns
+failed with exit 125 and `rootless netns: kill network process: permission denied`.
+Docker cleanup passed. This is not a passing integration run. Final source changes
+to completed-receipt retirement still require a complete integration rerun after
+the host cleanup failure is resolved. No installed Mooring source, service or
+schedule was changed by these tests.
+
+An additional local rootless Podman 5.8.4 check used
+`MOORING_TEST_REGISTRY_RUNTIME=podman MOORING_INTEGRATION=1 uv run pytest -q
+tests/test_integration.py -k podman`. The existing podman-compose 1.5.0 rejected
+the adapter's `--pull never` syntax, so all nine cases failed before initial
+deployment. An isolated temporary podman-compose 1.6.0 environment allowed seven
+cases to pass. Two bind-persistence assertions failed with permission denied on
+the SELinux-enforcing host. The tests and host protection were not weakened.
+Local disposable containers, volumes, networks and the temporary Python environment
+were removed. These local attempts do not substitute for Docker coverage.
+
 Version 0.1.1 was tested on September 14, 2026: 33 local tests and 12 Docker/Podman
 integration tests passed. Integration runtime: 118.83 seconds. Lint and formatting
 passed. GitHub CI also passed on Python 3.11 and 3.14.
