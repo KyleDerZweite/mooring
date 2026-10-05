@@ -45,8 +45,24 @@ mooring apply example --revision <revision-from-plan>
 mooring status example
 mooring update example             # discover a version without committing
 mooring update example --commit    # commit the image tag without deploying
+mooring update example --now       # publish and deploy the latest allowed stable tag now
+mooring update example --now --version 1.2.3 # select this exact stable tag
 mooring run                        # run enabled automatic policies
 ```
+
+`update --now` bypasses the automatic window and release-age delays for this
+invocation. It keeps the configured semver level unless `--version TAG` selects
+an exact higher stable tag in the same image repository and tag family. Use the
+complete tag, including any prefix or suffix. Existing Git image changes take
+precedence over discovery; a conflicting requested tag stops the command.
+It retains backup, health, locks and drift checks, and requires previously applied
+Compose and host policy. Initial deployment and configuration adoption still use
+`apply`. A healthy selected version is a no-op, not a restart or same-tag repull.
+
+If publication succeeds but deployment fails, JSON includes `published_revision`,
+`phase` and recovery guidance. Retry the same command to finish that retained
+target and digest; it will not discover a newer release. Interrupted deployments
+require `recover`. See the [agent guide](docs/agents.md) for the error contract.
 
 For scheduling, follow [host setup](docs/operations.md): install the example user
 units, enable lingering, and verify the timer after a successful explicit deployment.

@@ -45,29 +45,34 @@ def eligible_tags(current, tags, policy):
     return [tag for _, tag in sorted(result, reverse=True)]
 
 
+def update_policy(cfg):
+    policy = cfg.get("update")
+    if not isinstance(policy, dict):
+        raise Error("update_policy_required", "Configure an explicit version update policy")
+    if set(policy) - {
+        "level",
+        "tag_pattern",
+        "minimum_age_seconds",
+        "minimum_major_age_seconds",
+        "enabled",
+    }:
+        raise Error("tag_policy", "Unknown update policy fields")
+    age = policy.get("minimum_age_seconds", 43200)
+    if type(age) not in (int, float) or age < 0 or (isinstance(age, float) and not math.isfinite(age)):
+        raise Error("tag_policy", "minimum_age_seconds must be finite and non-negative")
+    major_age = policy.get("minimum_major_age_seconds", age)
+    if type(major_age) not in (int, float) or major_age < 0 or not math.isfinite(major_age):
+        raise Error("tag_policy", "minimum_major_age_seconds must be finite and non-negative")
+    return policy, age, major_age
+
+
 def update(deployment, *, commit=False, expected_revision=None, automatic=False):
     with deployment.locks(maintenance=False):
         if deployment.state().get("active"):
             raise Error(
                 "recovery_required", "Resolve the interrupted deployment before publishing another version"
             )
-        policy = deployment.cfg.get("update")
-        if not isinstance(policy, dict):
-            raise Error("update_policy_required", "Configure an explicit version update policy")
-        if set(policy) - {
-            "level",
-            "tag_pattern",
-            "minimum_age_seconds",
-            "minimum_major_age_seconds",
-            "enabled",
-        }:
-            raise Error("tag_policy", "Unknown update policy fields")
-        age = policy.get("minimum_age_seconds", 43200)
-        if type(age) not in (int, float) or age < 0 or (isinstance(age, float) and not math.isfinite(age)):
-            raise Error("tag_policy", "minimum_age_seconds must be finite and non-negative")
-        major_age = policy.get("minimum_major_age_seconds", age)
-        if type(major_age) not in (int, float) or major_age < 0 or not math.isfinite(major_age):
-            raise Error("tag_policy", "minimum_major_age_seconds must be finite and non-negative")
+        policy, age, major_age = update_policy(deployment.cfg)
         plan, rendered = deployment._plan()
         if automatic:
             deployment.check_automatic_authority(plan, deployment.state())

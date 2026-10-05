@@ -203,3 +203,40 @@ def test_podman_monitor_outlives_updater_without_leaking_service_identity(tmp_pa
     assert "INVOCATION_ID" not in calls[0]["env"]
     assert "NOTIFY_SOCKET" not in calls[0]["env"]
     assert calls[0]["env"]["KEEP_FOR_REGISTRY_AUTH"] == "present"
+
+
+def test_prepared_commit_survives_ambiguous_push_and_fetch(tmp_path):
+    author = tmp_path / "author"
+    author.mkdir()
+    git(author, "init", "-b", "main")
+    (author / "compose.yaml").write_text("services:\n  app:\n    image: example:1.0.0\n")
+    git(author, "add", ".")
+    git(author, "commit", "-m", "Initial")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "clone", "--bare", str(author), str(remote))
+    source = Source(
+        tmp_path / "state",
+        {
+            "repository": str(remote),
+            "ref": "refs/heads/main",
+            "compose_file": "compose.yaml",
+            "service": "app",
+            "name": "app",
+        },
+    )
+    base, _ = source.fetch()
+    prepared = []
+
+    def interrupt(revision):
+        prepared.append(revision)
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        source.commit_image(base, "example:1.0.0", "example:1.0.1", prepared=interrupt)
+    source.fetch()
+    git(source.git, "gc", "--prune=now")
+    source.publish_prepared(prepared[0], base)
+    assert source.fetch()[0] == prepared[0]
+    # A retry after the push response was lost is a no-op.
+    source.publish_prepared(prepared[0], base)
+    assert source.fetch()[0] == prepared[0]

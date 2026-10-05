@@ -8,6 +8,7 @@ from . import __version__
 from .common import Error
 from .config import load
 from .deployment import Deployment, in_window
+from .immediate import immediate_update
 from .updates import update
 
 
@@ -31,11 +32,22 @@ def main(argv=None):
         if command == "recover":
             sub.add_argument("--mode", choices=["rollback", "accept"], required=True)
         if command == "update":
-            sub.add_argument(
+            mode = sub.add_mutually_exclusive_group()
+            mode.add_argument(
                 "--commit", action="store_true", help="Publish a version-only Git commit; does not deploy"
+            )
+            mode.add_argument(
+                "--now",
+                action="store_true",
+                help="Publish and deploy immediately, bypassing schedule and release age",
+            )
+            sub.add_argument(
+                "--version", dest="target_version", help="Exact higher stable tag; requires --now"
             )
             sub.add_argument("--revision", help="Refuse if the branch advanced")
     args = parser.parse_args(argv)
+    if args.command == "update" and args.target_version is not None and not args.now:
+        parser.error("--version requires --now")
     try:
         cfg = load(args.config)
         if args.command == "services":
@@ -94,6 +106,10 @@ def main(argv=None):
                 data = deployment.history()
             elif args.command == "recover":
                 data = deployment.recover(args.mode)
+            elif args.now:
+                data = immediate_update(
+                    deployment, version=args.target_version, expected_revision=args.revision
+                )
             else:
                 data = update(deployment, commit=args.commit, expected_revision=args.revision)
         success = not (args.command == "run" and any("error" in item for item in data))
@@ -106,6 +122,7 @@ def main(argv=None):
                     "schema": 1,
                     "ok": False,
                     "error": {"code": error.code, "message": str(error), "retryable": error.retryable},
+                    **({"data": error.data} if hasattr(error, "data") else {}),
                 }
             )
         )

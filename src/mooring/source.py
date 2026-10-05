@@ -92,7 +92,7 @@ class Source:
             raise Error("missing_compose", "Configured Compose file is missing from the revision")
         return revision, compose
 
-    def commit_image(self, revision, expected_image, new_image):
+    def commit_image(self, revision, expected_image, new_image, *, prepared=None):
         """Publish one targeted change. Ordinary push rejects concurrent branch changes."""
         current, _ = self.fetch()
         if current != revision:
@@ -134,5 +134,39 @@ class Source:
                 cwd=root,
             )
             commit = run([*GIT, "rev-parse", "HEAD"], cwd=root).strip()
+            if prepared:
+                # Retain the exact commit locally before recording/publishing it.
+                run([*GIT, "--git-dir", str(self.git), "fetch", "--", str(root), commit])
+                run(
+                    [
+                        *GIT,
+                        "--git-dir",
+                        str(self.git),
+                        "update-ref",
+                        f"refs/mooring/prepared/{commit}",
+                        commit,
+                    ]
+                )
+                prepared(commit)
             run([*GIT, "push", "--", self.cfg["repository"], f"HEAD:{self.cfg['ref']}"], cwd=root)
             return commit
+
+    def publish_prepared(self, revision, expected_revision):
+        current, _ = self.fetch()
+        if current == revision:
+            return
+        if current != expected_revision:
+            raise Error(
+                "source_changed", "Branch changed; inspect the retained manual update", retryable=True
+            )
+        run(
+            [
+                *GIT,
+                "--git-dir",
+                str(self.git),
+                "push",
+                "--",
+                self.cfg["repository"],
+                f"{revision}:{self.cfg['ref']}",
+            ]
+        )
