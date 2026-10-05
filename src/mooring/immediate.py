@@ -219,5 +219,11 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
             if active
             else "Inspect plan/status/history; retry update SERVICE --now with the same target. If source or policy changed, restore the retained intent or explicitly apply the reviewed Git revision"
         )
+        if error.code == "digest_mismatch":
+            progress["recovery"] = (
+                "Inspect plan/status/history and verify the running image bytes. "
+                "Only to accept that reviewed state, use apply SERVICE --revision SHA from plan; "
+                "this supersedes the retained intent without repulling the tag"
+            )
         error.data = progress
         raise error
