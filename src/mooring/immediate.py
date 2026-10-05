@@ -223,7 +223,8 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
             progress["recovery"] = (
                 "Inspect plan/status/history and verify the running image bytes. "
                 "Only to accept that reviewed state, use apply SERVICE --revision SHA from plan; "
-                "this supersedes the retained intent without repulling the tag"
+                "this supersedes the retained intent. A healthy unchanged state is not repulled; "
+                "explicit apply repairs an unhealthy state"
             )
         error.data = progress
         raise error

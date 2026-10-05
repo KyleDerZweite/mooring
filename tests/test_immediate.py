@@ -588,6 +588,8 @@ def test_retained_same_revision_never_claims_unproven_bytes_as_unchanged(manual,
     assert caught.value.code == "digest_mismatch"
     assert "apply SERVICE --revision SHA" in caught.value.data["recovery"]
     assert "retry update" not in caught.value.data["recovery"]
+    assert "healthy unchanged" in caught.value.data["recovery"]
+    assert "repairs an unhealthy state" in caught.value.data["recovery"]
     assert caught.value.data["phase"] == "published"
     assert (d.root / "manual-update.json").exists()
     d.runtime.pull.assert_not_called()

@@ -52,7 +52,9 @@ receipt remains the digest approval for its matching image/configuration even if
 a later failed publication overwrites the ordinary update approval. If an already
 applied target has a different or unknown approved digest, retry stops with
 `digest_mismatch`. Review status/history before explicitly applying to accept the
-running state and supersede the old intent. This does not repull the same tag.
+running state and supersede the old intent. A healthy unchanged state is not
+repulled; explicit apply can recreate an unhealthy state using its existing
+repair and recovery contract.
 
 `update NAME --commit --revision SHA` publishes only a version change; `apply`
 deploys it. `run` combines discovery and automatic deployment according to trusted
