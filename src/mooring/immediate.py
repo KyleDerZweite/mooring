@@ -19,6 +19,20 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
             if state.get("active"):
                 raise Error("recovery_required", "An interrupted operation requires explicit recovery")
             plan, rendered = deployment._plan()
+            if (
+                receipt
+                and (
+                    plan["revision"] != receipt.get("revision")
+                    or (version is not None and version != receipt["version"])
+                )
+                and deployment.retire_completed_update()
+            ):
+                receipt = {}
+                progress = {
+                    "service": deployment.cfg["name"],
+                    "phase": "preflight",
+                    "published_revision": None,
+                }
             previous = deployment.check_automatic_authority(plan, state)
             policy, _, _ = update_policy(deployment.cfg)
             if expected_revision and plan["revision"] != expected_revision:

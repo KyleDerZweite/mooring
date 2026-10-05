@@ -203,17 +203,26 @@ class Deployment:
         self.phase(op, phase)
         self.save(state)
 
-    def apply(self, *, automatic=False, expected_revision=None):
-        with self.locks():
-            receipt = read_json(self.root / "manual-update.json", {})
-            applied = self.state().get("applied", {})
-            fulfilled = bool(receipt) and all(
+    def retire_completed_update(self):
+        """Forget only an intent already recorded as applied; caller holds the lock."""
+        receipt = read_json(self.root / "manual-update.json", {})
+        state = self.state()
+        applied = state.get("applied", {})
+        fulfilled = (
+            bool(receipt)
+            and not state.get("active")
+            and all(
                 receipt.get(key) == applied.get(key) for key in ("revision", "config_hash", "authority_hash")
             )
-            if fulfilled:
-                # This intent already succeeded. A later candidate's failure must
-                # not resurrect it and block a fresh manual update.
-                (self.root / "manual-update.json").unlink()
+        )
+        if fulfilled:
+            (self.root / "manual-update.json").unlink()
+        return fulfilled
+
+    def apply(self, *, automatic=False, expected_revision=None):
+        with self.locks():
+            # A successor's failure must not resurrect a completed manual intent.
+            self.retire_completed_update()
             result = self._apply(automatic=automatic, expected_revision=expected_revision)
             if result["result"] in {"deployed", "unchanged"}:
                 receipt = read_json(self.root / "manual-update.json", {})

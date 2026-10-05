@@ -448,3 +448,22 @@ def test_failed_automatic_successor_does_not_resurrect_fulfilled_intent(manual, 
     assert not (d.root / "manual-update.json").exists()
     d.runtime.pull.side_effect = None
     assert immediate_update(d)["version"] == "1.0.2"
+
+
+def test_direct_manual_successor_retires_only_fulfilled_intent(manual):
+    d, desired, _ = manual
+    original_apply = d._apply
+
+    def interrupted(**kwargs):
+        original_apply(**kwargs)
+        raise KeyboardInterrupt()
+
+    d._apply = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        immediate_update(d, version="1.0.1")
+    d._apply = original_apply
+    desired["revision"] = "c" * 40
+    desired["rendered"]["services"]["app"]["image"] = "example/app:1.0.2"
+    assert immediate_update(d)["published_revision"] == "c" * 40
+    d.source.commit_image.assert_called_once()
+    assert not (d.root / "manual-update.json").exists()
