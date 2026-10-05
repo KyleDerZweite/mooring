@@ -211,9 +211,9 @@ class Deployment:
         fulfilled = (
             bool(receipt)
             and not state.get("active")
-            and all(
-                receipt.get(key) == applied.get(key) for key in ("revision", "config_hash", "authority_hash")
-            )
+            and receipt.get("candidate") == applied.get("image")
+            and receipt.get("digest") == applied.get("approved_digest")
+            and all(receipt.get(key) == applied.get(key) for key in ("config_hash", "authority_hash"))
         )
         if fulfilled:
             (self.root / "manual-update.json").unlink()
@@ -225,8 +225,9 @@ class Deployment:
             self.retire_completed_update()
             result = self._apply(automatic=automatic, expected_revision=expected_revision)
             if result["result"] in {"deployed", "unchanged"}:
-                receipt = read_json(self.root / "manual-update.json", {})
-                if not automatic or receipt.get("revision") == result["revision"]:
+                if automatic:
+                    self.retire_completed_update()
+                else:
                     (self.root / "manual-update.json").unlink(missing_ok=True)
             return result
 

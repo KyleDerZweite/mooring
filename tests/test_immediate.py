@@ -491,3 +491,48 @@ def test_unrelated_git_advance_completes_fulfilled_target_without_discovery(manu
     registry.assert_not_called()
     d.runtime.deploy.assert_called_once()
     assert not (d.root / "manual-update.json").exists()
+
+
+def test_timer_same_target_at_new_git_revision_retires_matching_digest(manual, monkeypatch):
+    d, desired, registry = manual
+    d.runtime.pull.side_effect = Error("pull_failed", "Temporary failure")
+    with pytest.raises(Error):
+        immediate_update(d, version="1.0.1")
+    # A docs/sibling commit changes Git identity but not the approved service bytes.
+    desired["revision"] = "c" * 40
+    d.runtime.pull.side_effect = None
+    monkeypatch.setattr("mooring.deployment.in_window", lambda _: True)
+    assert d.apply(automatic=True)["result"] == "deployed"
+    assert d.state()["applied"]["approved_digest"] == "sha256:chosen"
+    assert not (d.root / "manual-update.json").exists()
+    registry.reset_mock()
+    assert immediate_update(d, version="1.0.1")["result"] == "unchanged"
+    registry.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("approved_digest", "sha256:other"),
+        ("config_hash", "other-config"),
+        ("authority_hash", "other-authority"),
+        ("image", "example/app:1.0.9"),
+    ],
+)
+def test_different_applied_target_cannot_retire_manual_intent(manual, field, value):
+    d, _, _ = manual
+    original_apply = d._apply
+
+    def interrupted(**kwargs):
+        original_apply(**kwargs)
+        raise KeyboardInterrupt()
+
+    d._apply = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        immediate_update(d, version="1.0.1")
+    state = d.state()
+    state["applied"][field] = value
+    d.save(state)
+    with d.locks():
+        assert not d.retire_completed_update()
+    assert (d.root / "manual-update.json").exists()
