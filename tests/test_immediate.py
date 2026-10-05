@@ -467,3 +467,27 @@ def test_direct_manual_successor_retires_only_fulfilled_intent(manual):
     assert immediate_update(d)["published_revision"] == "c" * 40
     d.source.commit_image.assert_called_once()
     assert not (d.root / "manual-update.json").exists()
+
+
+def test_unrelated_git_advance_completes_fulfilled_target_without_discovery(manual):
+    d, desired, registry = manual
+    original_apply = d._apply
+
+    def interrupted(**kwargs):
+        original_apply(**kwargs)
+        raise KeyboardInterrupt()
+
+    d._apply = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        immediate_update(d, version="1.0.1")
+    d._apply = original_apply
+    desired["revision"] = "c" * 40
+    # A docs/sibling-only Git commit leaves the selected service configuration alone.
+    desired["tags"] = ["1.0.9"]
+    registry.reset_mock()
+    result = immediate_update(d)
+    assert result["version"] == "1.0.1" and result["result"] == "unchanged"
+    assert result["published_revision"] == "b" * 40
+    registry.assert_not_called()
+    d.runtime.deploy.assert_called_once()
+    assert not (d.root / "manual-update.json").exists()

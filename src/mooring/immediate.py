@@ -19,6 +19,10 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
             if state.get("active"):
                 raise Error("recovery_required", "An interrupted operation requires explicit recovery")
             plan, rendered = deployment._plan()
+            previous = deployment.check_automatic_authority(plan, state)
+            policy, _, _ = update_policy(deployment.cfg)
+            if expected_revision and plan["revision"] != expected_revision:
+                raise Error("source_changed", "Desired branch advanced; inspect the plan", retryable=True)
             if (
                 receipt
                 and (
@@ -27,16 +31,23 @@ def immediate_update(deployment, *, version=None, expected_revision=None):
                 )
                 and deployment.retire_completed_update()
             ):
+                if (version is None or version == receipt["version"]) and plan["config_hash"] == receipt[
+                    "config_hash"
+                ]:
+                    if not deployment.runtime.healthy(previous["image_id"], previous["config_hash"]):
+                        raise Error("unhealthy", "Repairing the current version requires explicit apply")
+                    return {
+                        **progress,
+                        "phase": "completed",
+                        "result": "unchanged",
+                        "deployment": {**plan, "result": "unchanged"},
+                    }
                 receipt = {}
                 progress = {
                     "service": deployment.cfg["name"],
                     "phase": "preflight",
                     "published_revision": None,
                 }
-            previous = deployment.check_automatic_authority(plan, state)
-            policy, _, _ = update_policy(deployment.cfg)
-            if expected_revision and plan["revision"] != expected_revision:
-                raise Error("source_changed", "Desired branch advanced; inspect the plan", retryable=True)
             repository, current = split_image(previous["image"])
             tls = ["--tls-verify=false"] if deployment.cfg.get("insecure_registry") else []
 
