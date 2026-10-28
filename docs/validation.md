@@ -1,5 +1,37 @@
 # Validation
 
+The October 28, 2026 maintenance diff is based on
+`7e43d500c5ec30750f89d56c815ce1cde2791efc`. It retains the deployment contract
+and Python 3.11+ requirement. `uv lock --upgrade` with uv 0.11.16 updated pytest
+9.1.1 to 9.2.0, Ruff 0.16.7 to 0.17.3, iniconfig 2.3.0 to 2.3.1 and pluggy
+1.6.0 to 1.7.0 within existing constraints. Runtime dependencies did not change.
+CI pins the locally checked uv version and immutable commits for
+[checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1) and
+[setup-uv v10.3.2](https://github.com/astral-sh/setup-uv/releases/tag/v10.3.2).
+Both actions use Node 24 on the existing GitHub-hosted Ubuntu runner.
+[Dependabot supports uv 0.11](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories);
+weekly updates cover uv manifests/lockfiles and GitHub Actions.
+
+`uv sync --locked --group dev`, `uv run --locked pytest -q`,
+`uv run --locked ruff check .` and `uv run --locked ruff format --check .`
+passed on Python 3.14.8 and 3.11.17. Each Python version passed 83 tests and
+skipped the 20 opt-in integration cases. Python 3.11 used a temporary local
+environment through `UV_PROJECT_ENVIRONMENT` and `--python /usr/bin/python3.11`.
+`uv lock --check` passed. `UV_CONCURRENT_BUILDS=2 uv build --no-sources`
+built the source distribution and wheel; archive inspection confirmed the
+Python requirement and CLI module. An initial build included the temporary
+Python 3.11 environment and rejected its external symlinks. After removing that
+test environment, the build passed. Both workflow YAML files parsed locally.
+The changed Actions workflow has not run on GitHub. No real runtime integration
+suite or deployment ran, so the existing Podman/SELinux limits below still apply.
+
+On October 28, the GitHub API enabled dependency vulnerability alerts and the
+dependency graph. A follow-up setting check returned HTTP 204; the paginated
+open Dependabot alert inventory returned zero. This initial inventory is not
+a security audit or proof that GitHub has completed dependency analysis.
+Dependabot security updates, secret scanning and push protection remain disabled;
+their settings were not changed. No open pull requests overlapped this work.
+
 The immediate manual update source `13b17357b9b963eff649ca130e4c4f31feaf86b7`
 passed validation on October 5, 2026. `uv sync --group dev`, `uv run pytest`,
 `uv run ruff check .` and `uv run ruff format --check .` passed locally on
