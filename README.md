@@ -70,17 +70,23 @@ For agent-driven deployment, read the [agent guide](docs/agents.md).
 
 ## Development
 
+CI checks Python 3.11 and 3.14 with uv 0.11.16. Use the committed lockfile for
+development; Dependabot checks uv dependencies and GitHub Actions weekly.
+
 ```sh
-uv sync --group dev
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
+uv sync --locked --group dev
+uv run --locked pytest
+uv run --locked ruff check .
+uv run --locked ruff format --check .
 ```
+
+To refresh compatible dependencies deliberately, run `uv lock --upgrade`, then
+repeat the checks above and include `uv.lock` in the change.
 
 On an authorized test host with Docker and rootless Podman:
 
 ```sh
-MOORING_INTEGRATION=1 uv run pytest -q tests/test_integration.py
+MOORING_INTEGRATION=1 uv run --locked pytest -q tests/test_integration.py
 ```
 
 Integration tests create disposable containers, volumes and a loopback registry.
